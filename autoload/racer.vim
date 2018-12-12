@@ -1,5 +1,19 @@
 let s:is_win = has('win32') || has('win64')
 
+function! s:RacerSetupTags()
+    if exists("g:racer_has_hookedup_tagfile")
+        return
+    endif 
+    let g:racer_has_hookedup_tagfile = 1
+
+    let tagfolder = expand(fnamemodify(g:racer_tagfile, ":h"))
+    if filewritable(tagfolder) == 0 && exists("*mkdir")
+        call mkdir(tagfolder, "p", 0700)
+    endif
+
+    exec 'set tags+='. g:racer_tagfile
+endf
+
 function! racer#GetRacerCmd() abort
   if !exists('g:racer_cmd')
     let sep = s:is_win ? '\' : '/'
@@ -201,6 +215,7 @@ function! racer#GoToDefinition()
     let col = col('.') - 1
     let b:racer_col = col
     let fname = expand('%:p')
+    let symbol = expand("<cword>")
     let tmpfname = tempname()
     call writefile(getline(1, '$'), tmpfname)
     let cmd = racer#GetRacerCmd() . ' find-definition ' .
@@ -211,10 +226,14 @@ function! racer#GoToDefinition()
         if res =~# ' error: ' && line !=# 'END'
             call s:Warn(line)
         elseif line =~# '^MATCH'
-            let linenum = split(line[6:], ',')[1]
-            let colnum = split(line[6:], ',')[2]
-            let fname = split(line[6:], ',')[3]
-            call s:RacerJumpToLocation(fname, linenum, colnum)
+            let to_linenum = split(line[6:], ',')[1]
+            let to_colnum = split(line[6:], ',')[2]
+            let to_fname = split(line[6:], ',')[3]
+
+            let from_line_contents = getline('.')
+            let from_linenum = line('.')
+
+            call s:RacerJumpToLocation(symbol, from_line_contents, fname, from_linenum, to_fname, to_linenum, to_colnum)
             break
         endif
     endfor
@@ -235,21 +254,45 @@ function! s:RacerGetBufferContents(base)
     return buf_lines
 endfunction
 
-function! s:RacerJumpToLocation(filename, linenum, colnum)
-    if a:filename == ''
+function! s:RacerPushTag(symbol, from_line_contents, from_filename)
+    let win = winsaveview()
+
+    call s:RacerSetupTags()
+    let tagfile = expand(fnamemodify(g:racer_tagfile, ':p'))
+
+    let tag_symbol = g:racer_symbolprefix . a:symbol
+    echo tag_symbol
+
+    " Tags are a symbol, a file, and a search expression.
+    let tag_str = printf("%s\t%s\t/^%s$/;", tag_symbol, a:from_filename, a:from_line_contents)
+    let success = writefile([tag_str], tagfile, "S")
+    if success >= 0
+        exec 'tjump '. tag_symbol
+    else
+        echoerr 'Failed to write to '. tagfile
+    endif
+    
+    " tjump moves the cursor to first nonblank, so we must move back.
+    call winrestview(win)
+endfunction
+
+function! s:RacerJumpToLocation(symbol, from_line_contents, from_filename, from_linenum, to_filename, to_linenum, to_colnum)
+    if a:to_filename == ''
         return
     endif
 
+    call s:RacerPushTag(a:symbol, a:from_line_contents, a:from_filename)
+
     " Record jump mark
     normal! m`
-    if a:filename != expand('%:p')
+    if a:to_filename != expand('%:p')
         try
-            exec 'keepjumps e ' . fnameescape(a:filename)
+            exec 'keepjumps e ' . fnameescape(a:to_filename)
         catch /^Vim\%((\a\+)\)\=:E37/
             " When the buffer is not saved, E37 is thrown.  We can ignore it.
         endtry
     endif
-    call cursor(a:linenum, a:colnum + 1)
+    call cursor(a:to_linenum, a:to_colnum + 1)
     " Center definition on screen
     normal! zz
 endfunction
